@@ -25,7 +25,79 @@ M.is_supported = function(bufnr)
   return true, nil
 end
 
+local function dump(o, indent)
+  indent = indent or ""
+  if o == nil then
+    return ""
+  end
+  if indent == "     " then
+    return "abort"
+  end
+  for key, value in pairs(o) do
+    if type(value) == "table" then
+      print(indent .. tostring(key) .. ": ")
+      dump(value, indent .. " ")
+    else
+      print(indent .. tostring(key) .. ": " .. tostring(value))
+    end
+  end
+end
+
+function FindTokens(tokens)
+  -- Get the total number of lines in the current buffer
+  local ret_lines = {}
+  local ret_tokens = {}
+  local line_count = vim.api.nvim_buf_line_count(0)
+  for curr_line = 1, line_count do
+    local line = vim.api.nvim_buf_get_lines(0, curr_line - 1, curr_line, false)[1]
+    for _, v in ipairs(tokens) do
+      if string.match(line, "^%s*" .. v .. ":") then
+        table.insert(ret_lines, curr_line)
+        table.insert(ret_tokens, v)
+      end
+    end
+  end
+  return ret_lines, ret_tokens
+end
+
+local function InsertItem(stack, symbol_node, items, item)
+  if item.parent then
+    if not item.parent.children then
+      item.parent.children = {}
+    end
+    table.insert(item.parent.children, item)
+  else
+    table.insert(items, item)
+  end
+  table.insert(stack, { node = symbol_node, item = item })
+end
+
+local function AddCustomToken(stack, symbol_node, items, curr_class, curr_line, acc_spec)
+  local acc_range = {
+    lnum = curr_line,
+    end_lnum = curr_line,
+    col = 1,
+    end_col = 1,
+  }
+  ---@type aerial.Symbol
+  local acc_spec_sym = {
+    kind = "Enum",
+    name = acc_spec,
+    level = curr_class["level"] + 1,
+    parent = curr_class,
+    selection_range = acc_range,
+    scope = nil,
+  }
+  for k, v in pairs(acc_range) do
+    acc_spec_sym[k] = v
+  end
+  InsertItem(stack, symbol_node, items, acc_spec_sym)
+end
+
 M.fetch_symbols_sync = function(bufnr)
+  local token_lines, tokens = FindTokens({ "public", "private", "protected" })
+  local last_sym_node = {}
+  local classes = {}
   bufnr = bufnr or 0
   local extensions = require("aerial.backends.treesitter.extensions")
   local get_node_text = vim.treesitter.get_node_text
@@ -147,18 +219,45 @@ M.fetch_symbols_sync = function(bufnr)
     if config.post_parse_symbol and config.post_parse_symbol(bufnr, item, ctx) == false then
       goto continue
     end
-    if item.parent then
-      if not item.parent.children then
-        item.parent.children = {}
+
+    local added = {}
+
+    for idx, curr_line in ipairs(token_lines) do
+      -- remove all classes from list that are passed
+      while #classes > 1 and curr_line > classes[#classes]["end_lnum"] do
+        table.remove(classes)
       end
-      table.insert(item.parent.children, item)
-    else
-      table.insert(items, item)
+      -- stop if nor more classes or at current item
+      if #classes == 0 or curr_line >= item["lnum"] then
+        break
+      end
+      -- add access specifier if its before the end of last seen class
+      if curr_line < classes[#classes]["end_lnum"] then
+        AddCustomToken(stack, symbol_node, items, classes[#classes], curr_line, tokens[idx])
+        table.insert(added, idx)
+      end
     end
-    table.insert(stack, { node = symbol_node, item = item })
+
+    if item["kind"] == "Class" or item["kind"] == "Struct" then
+      table.insert(classes, item)
+    end
+
+    for i = #added, 1, -1 do
+      local idx = added[i]
+      table.remove(tokens, idx)
+      table.remove(token_lines, idx)
+    end
+
+    InsertItem(stack, symbol_node, items, item)
+    last_sym_node = symbol_node
 
     ::continue::
   end
+
+  for idx, curr_line in ipairs(token_lines) do
+    AddCustomToken(stack, last_sym_node, items, classes[#classes], curr_line, tokens[idx])
+  end
+
   ext.postprocess_symbols(bufnr, items)
   backends.set_symbols(
     bufnr,
