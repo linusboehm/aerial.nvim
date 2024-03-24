@@ -37,11 +37,53 @@ local function symbols_at_same_position(a, b)
   return true
 end
 
+local function dump(o, indent)
+  indent = indent or ""
+  if o == nil then
+    return ""
+  end
+  if indent == "     " then
+    return "abort"
+  end
+  for key, value in pairs(o) do
+    if type(value) == "table" then
+      print(indent .. tostring(key) .. ": ")
+      dump(value, indent .. " ")
+    else
+      print(indent .. tostring(key) .. ": " .. tostring(value))
+    end
+  end
+end
+
+local function add_custom_token(list, level, curr_class, curr_line, acc_spec)
+  local acc_range = {
+    lnum = curr_line,
+    end_lnum = curr_line,
+    col = 1,
+    end_col = 1,
+  }
+  ---@type aerial.Symbol
+  local access_specifier_item = {
+    kind = "Enum",
+    name = acc_spec,
+    level = level,
+    -- parent = curr_class,
+    selection_range = acc_range,
+    scope = nil,
+  }
+  for k, v in pairs(acc_range) do
+    access_specifier_item[k] = v
+  end
+  dump(access_specifier_item)
+  table.insert(list, access_specifier_item)
+end
+
 ---@param symbols table
 ---@param bufnr integer
 ---@param fix_start_col boolean
 ---@param client_name string LSP client name
 local function process_symbols(symbols, bufnr, fix_start_col, client_name)
+  local token_lines, tokens = backends.find_tokens({ "public", "private", "protected" })
   local include_kind = config.get_filter_kind_map(bufnr)
   local max_line = vim.api.nvim_buf_line_count(bufnr)
   local function _process_symbols(symbols_, parent, list, level)
@@ -100,6 +142,27 @@ local function process_symbols(symbols, bufnr, fix_start_col, client_name)
               })
               ~= false
           then
+            local added = {}
+
+            for idx, curr_line in ipairs(token_lines) do
+              -- add access specifier if its before the end of last seen class
+              if curr_line < item["end_lnum"] then --and curr_line < item["end_lnum"] then
+                local new_level = item["level"]
+                if kind == "Class" or kind == "Struct" then
+                  new_level = item["level"] + 1
+                end
+                add_custom_token(list, new_level, item, curr_line, tokens[idx])
+                table.insert(added, idx)
+              end
+            end
+            -- end
+            for i = #added, 1, -1 do
+              local idx = added[i]
+              table.remove(tokens, idx)
+              table.remove(token_lines, idx)
+            end
+
+            -- vim.print(util.dump(symbol))
             table.insert(list, item)
           end
         elseif symbol.children then

@@ -253,4 +253,55 @@ M.attach = function(bufnr, refresh)
   end
 end
 
+function M.find_tokens(tokens)
+  local ret_lines = {}
+  local ret_tokens = {}
+  -- Get the total number of lines in the current buffer
+  local line_count = vim.api.nvim_buf_line_count(0)
+  for curr_line = 1, line_count do
+    local line = vim.api.nvim_buf_get_lines(0, curr_line - 1, curr_line, false)[1]
+    for _, v in ipairs(tokens) do
+      if string.match(line, "^%s*" .. v .. ":") then
+        table.insert(ret_lines, curr_line)
+        table.insert(ret_tokens, v)
+      end
+    end
+  end
+  return ret_lines, ret_tokens
+end
+
+function M.insert_item(stack, symbol_node, items, item)
+  if item.parent then
+    if not item.parent.children then
+      item.parent.children = {}
+    end
+    table.insert(item.parent.children, item)
+  else
+    table.insert(items, item)
+  end
+  table.insert(stack, { node = symbol_node, item = item })
+end
+
+function M.add_custom_token(stack, symbol_node, items, curr_class, curr_line, acc_spec)
+  local acc_range = {
+    lnum = curr_line,
+    end_lnum = curr_line,
+    col = 1,
+    end_col = 1,
+  }
+  ---@type aerial.Symbol
+  local acc_spec_sym = {
+    kind = "Enum",
+    name = acc_spec,
+    level = curr_class["level"] + 1,
+    parent = curr_class,
+    selection_range = acc_range,
+    scope = nil,
+  }
+  for k, v in pairs(acc_range) do
+    acc_spec_sym[k] = v
+  end
+  M.insert_item(stack, symbol_node, items, acc_spec_sym)
+end
+
 return M
